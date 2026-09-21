@@ -1,19 +1,45 @@
 # my_experiment.py
 
-# 1. 从我们提供的帮助脚本中导入加载函数
+# 1. 数据加载: 读取两个原始 CSV 文件
+#    - train_data.csv          : 有标签数据 (列: text, target)
+#    - test_data_unlabeled.csv : 无标签数据 (列: text), 用于最终预测提交
+#    返回: X_all(全部文本) / y_all(全部标签) / X_test(无标签测试文本)
 import pandas as pd
 
-def load_data():
+
+def load_data() -> tuple[list[str], list[int], list[str]]:
     train_df = pd.read_csv('train_data.csv')
     test_df = pd.read_csv('test_data_unlabeled.csv')
-    X_train = train_df['text'].astype(str).tolist()
-    y_train = train_df['target'].values
-    X_test_unlabeled = test_df['text'].astype(str).tolist()
-    return X_train, y_train, X_test_unlabeled
 
-# 2. 调用函数来获取数据
-#    这个函数会自动读取 .csv 文件并返回你需要的所有内容
+    # 结构检查: 确认需要的列都存在
+    assert {'text', 'target'} <= set(train_df.columns), "train_data.csv 缺少 text/target 列"
+    assert 'text' in test_df.columns, "test_data_unlabeled.csv 缺少 text 列"
+
+    # 缺失值检查: 若 text 为 NaN, astype(str) 会把它变成字符串 "nan" 混入数据, 需显式剔除
+    n_missing = (
+        int(train_df['text'].isna().sum())
+        + int(train_df['target'].isna().sum())
+        + int(test_df['text'].isna().sum())
+    )
+    if n_missing > 0:
+        print(f"[加载检查] 发现 {n_missing} 条缺失记录, 已剔除")
+    train_df = train_df.dropna(subset=['text', 'target'])
+    test_df = test_df.dropna(subset=['text'])
+
+    X_all = train_df['text'].astype(str).tolist()
+    y_all = train_df['target'].astype(int).tolist()
+    X_test = test_df['text'].astype(str).tolist()
+    return X_all, y_all, X_test
+
+
+# 2. 调用加载函数, 并检查加载结果
 X_all, y_all, X_test = load_data()
+
+print("--- 数据加载完成 ---")
+print(f"有标签数据: {len(X_all)} 条 (列: text, target)")
+print(f"无标签测试数据: {len(X_test)} 条 (列: text)")
+print(f"标签类别数: {len(set(y_all))}, 取值范围: [{min(y_all)}, {max(y_all)}]")
+print(f"重复文本数量: 有标签 {pd.Series(X_all).duplicated().sum()} 条 | 无标签 {pd.Series(X_test).duplicated().sum()} 条")
 
 # 3. 划分验证集: 从有标签数据中分层抽取 20% 作为验证集
 #    最终得到三个数据集:
@@ -62,6 +88,60 @@ print("第一个无标签测试样本内容:")
 print(X_test[0])
 print("\n" + "="*50)
 
+# 5. 文本预处理: 清洗文本
+#    清洗流水线: 去邮件头(保留 Subject) -> 去引用 -> 去引导句 -> 截签名
+#                -> 删邮箱/Message-ID -> 去 uuencode 块 -> 空白规范化
+import re
+
+
+def clean_text(text: str) -> str:
+    """对单条帖子文本做清洗, 返回清洗后的文本。"""
+    # (1) 邮件头: 去掉 "Subject:" 前缀(保留主题词), 其余字段行整行删除
+    text = re.sub(r'(?im)^subject:\s*', '', text)
+    text = re.sub(
+        r'(?im)^(from|to|organization|lines|nntp[\w-]*|distribution|reply-to|sender|in-reply-to|'
+        r'message-id|references|xref|newsreader|x-[\w-]+|keywords|summary|expires|path|'
+        r'followup-to|approved|supersedes|originator|date|content[\w-]*|mime-version):.*$',
+        '', text,
+    )
+
+    # (2) 引用块: 删除 ">" / "=>" / "|" 开头的引用行, 以及 "In article ... writes:" 引导句
+    text = re.sub(r'(?m)^[ \t]*(?:=>|>|\|).*$', '', text)
+    text = re.sub(r'(?is)\bin article\b.{0,300}?\bwrit\w*:', ' ', text)
+
+    # (3) 签名区: 在只有 "--"(可带空格) 的行处截断, 丢弃后面的签名内容
+    text = re.split(r'(?m)^--[ \t]*$', text)[0]
+
+    # (4) 邮箱地址与 Message-ID: 替换为空格 (无主题信息, 且可能泄漏发帖人身份)
+    text = re.sub(r'[\w.+-]+@[\w.-]+', ' ', text)
+    text = re.sub(r'<[^<>\s]+@[^<>\s]+>', ' ', text)
+
+    # (5) uuencode 二进制块: 删除 "begin xxx" 标记行, 以及超长无空格字符行(编码数据)
+    text = re.sub(r'(?m)^begin\s+[0-7]{3}.*$', '', text)
+    text = re.sub(r'(?m)^\S{40,}$', '', text)
+
+    # (6) 空白与控制字符规范化: 控制字符 -> 空格; 连续空白(含换行) -> 单个空格
+    text = re.sub(r'[\x00-\x08\x0b-\x1f]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+
+# 对训练集/验证集/测试集施加完全相同的清洗
+raw_first = X_train[0]                                   # 存一条清洗前的样本用于对比
+n_before = sum(len(s) for s in X_train) / len(X_train)   # 清洗前平均长度
+X_train = [clean_text(s) for s in X_train]
+X_val = [clean_text(s) for s in X_val]
+X_test = [clean_text(s) for s in X_test]
+n_after = sum(len(s) for s in X_train) / len(X_train)    # 清洗后平均长度
+
+print("--- 文本清洗完成 (A 类清洗) ---")
+print(f"训练集平均长度: {n_before:.0f} -> {n_after:.0f} 字符")
+print("清洗前后对比 (训练集第 1 条, 前 200 字符):")
+print("【清洗前】", raw_first[:200].replace('\n', ' ⏎ '), "...")
+print("【清洗后】", X_train[0][:200], "...")
+print("-" * 20)
+
 # --- 在这里开始你的实验！ ---
 # 现在，你可以使用三个数据集来进行特征提取、模型训练、验证和预测了:
 #   X_train / y_train -> 训练集 (用于拟合)
@@ -92,3 +172,6 @@ predictions = svm_model.predict(X_test_tfidf)
 
 # 5. 保存你的预测结果...
 pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+
+if __name__ == "__main__":
+    pass
