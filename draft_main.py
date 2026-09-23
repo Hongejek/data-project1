@@ -72,21 +72,21 @@ print(pd.Series(y_val).value_counts().sort_index().to_string())
 print("-" * 20)
 
 # 打印第一个训练样本和它的标签，感受一下数据
-print("第一个训练样本内容:")
-print(X_train[0])
-print(f"\n第一个训练样本的标签: {y_train[0]}")
-print("-" * 20)
+# print("第一个训练样本内容:")
+# print(X_train[0])
+# print(f"\n第一个训练样本的标签: {y_train[0]}")
+# print("-" * 20)
 
 # 打印第一个验证集样本和它的标签
-print("第一个验证样本内容:")
-print(X_val[0])
-print(f"\n第一个验证样本的标签: {y_val[0]}")
-print("-" * 20)
+# print("第一个验证样本内容:")
+# print(X_val[0])
+# print(f"\n第一个验证样本的标签: {y_val[0]}")
+# print("-" * 20)
 
 # 打印第一个需要你预测的测试样本
-print("第一个无标签测试样本内容:")
-print(X_test[0])
-print("\n" + "="*50)
+# print("第一个无标签测试样本内容:")
+# print(X_test[0])
+# print("\n" + "="*50)
 
 # 5. 文本预处理: 清洗文本
 #    清洗流水线: 去邮件头(保留 Subject) -> 去引用 -> 去引导句 -> 截签名
@@ -148,30 +148,139 @@ print("-" * 20)
 #   X_val   / y_val   -> 验证集 (用于调参和模型选择)
 #   X_test            -> 无标签测试集 (用于最终预测并提交)
 
-# 举例：
-# 1. 创建TF-IDF向量化器（注意: 只能在训练集上 fit, 防止数据泄漏）
+# 1. 特征工程: TF-IDF 向量化 (文本 -> 数值矩阵)
+#    关键原则: 词表与 IDF 只能从训练集学习(fit), 验证/测试集只做 transform, 防止数据泄漏
 from sklearn.feature_extraction.text import TfidfVectorizer
-vectorizer = TfidfVectorizer(max_features=5000)
-X_train_tfidf = vectorizer.fit_transform(X_train)   # 训练集: fit + transform
-X_val_tfidf = vectorizer.transform(X_val)           # 验证集: 只 transform
-X_test_tfidf = vectorizer.transform(X_test)         # 测试集: 只 transform
 
-# 2. 训练一个模型...
-from sklearn.svm import SVC
-svm_model = SVC()
-svm_model.fit(X_train_tfidf, y_train)
+vectorizer = TfidfVectorizer(max_features=5000)     # 全局词表: 按词频排序保留前 5000 个词 (与类别无关)
+X_train_tfidf = vectorizer.fit_transform(X_train)   # 训练集: fit(学词表+IDF) + transform
+X_val_tfidf = vectorizer.transform(X_val)           # 验证集: 只 transform (沿用训练集词表)
+X_test_tfidf = vectorizer.transform(X_test)         # 测试集: 只 transform (沿用训练集词表)
 
-# 3. 在验证集上评估模型效果，用于调参和模型选择...
-from sklearn.metrics import accuracy_score
-val_predictions = svm_model.predict(X_val_tfidf)
-val_accuracy = accuracy_score(y_val, val_predictions)
-print(f"验证集准确率: {val_accuracy:.4f}")
+# 向量化结果检查
+print("--- TF-IDF 向量化完成 ---")
+print(f"训练集矩阵: {X_train_tfidf.shape[0]} 条 x {X_train_tfidf.shape[1]} 维")
+print(f"验证集矩阵: {X_val_tfidf.shape[0]} 条 x {X_val_tfidf.shape[1]} 维")
+print(f"测试集矩阵: {X_test_tfidf.shape[0]} 条 x {X_test_tfidf.shape[1]} 维")
+print(f"词表大小: {len(vectorizer.vocabulary_)}")
+nnz = X_train_tfidf.getnnz()
+print(f"训练矩阵非零值占比: {nnz / (X_train_tfidf.shape[0] * X_train_tfidf.shape[1]):.3%}")
+print("-" * 20)
 
-# 4. 对无标签测试集进行预测...
-predictions = svm_model.predict(X_test_tfidf)
+# 2. 朴素贝叶斯 (MultinomialNB)
+def MultinomialNB(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf):
+    """朴素贝叶斯 (MultinomialNB) 完整流程: 训练 -> 验证集评估 -> 测试集预测 -> 保存预测结果"""
+    # 函数名与 sklearn 类名相同, 用别名导入避免冲突
+    from sklearn.naive_bayes import MultinomialNB as NBClassifier
+    from sklearn.metrics import accuracy_score
 
-# 5. 保存你的预测结果...
-pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+    # (1) 训练模型 (alpha: 平滑参数, NB 最主要的可调超参数)
+    model = NBClassifier(alpha=1)
+    print("--- 开始训练朴素贝叶斯模型 ---")
+    model.fit(X_train_tfidf, y_train)
+    print("模型训练完成!")
+
+    # (2) 验证集评估 (模型选择/对比的依据)
+    val_predictions = model.predict(X_val_tfidf)
+    val_accuracy = accuracy_score(y_val, val_predictions)
+    print("--- 朴素贝叶斯 (MultinomialNB) 验证集对比 ---")
+    print(f"验证集准确率: {val_accuracy:.4f}")
+
+    # (3) 对无标签测试集预测, 并保存提交文件
+    predictions = model.predict(X_test_tfidf)
+    pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+
+    return val_accuracy
+
+
+# 3. 支持向量机 (SVC)
+def SVC(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf):
+    """支持向量机 (SVC) 完整流程: 训练 -> 验证集评估 -> 测试集预测 -> 保存预测结果"""
+    # 函数名与 sklearn 类名相同, 用别名导入避免冲突
+    from sklearn.svm import SVC as SVCClassifier
+    from sklearn.metrics import accuracy_score
+
+    # (1) 训练模型
+    # 文本数据(高维稀疏)优先用线性核, 效果好且速度快
+    # C 是正则化参数: 越小越容忍错分(边界更简单), 越大越严格要求拟合; 调参可试 [0.1, 1, 10, 100]
+    model = SVCClassifier(kernel='linear', C=100, random_state=42)
+    print("--- 开始训练支持向量机 (SVM) 模型 ---")
+    model.fit(X_train_tfidf, y_train)
+    print("模型训练完成!") 
+
+    # (2) 验证集评估 (模型选择/对比的依据)
+    val_predictions = model.predict(X_val_tfidf)
+    val_accuracy = accuracy_score(y_val, val_predictions)
+    print("--- 支持向量机 (SVC) 验证集对比 ---")
+    print(f"验证集准确率: {val_accuracy:.4f}")
+
+    # (3) 对无标签测试集预测, 并保存提交文件
+    predictions = model.predict(X_test_tfidf)
+    pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+
+    return val_accuracy
+
+
+# 4. 逻辑回归 (LogisticRegression)
+def LogisticRegression(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf):
+    """逻辑回归 (LogisticRegression) 完整流程: 训练 -> 验证集评估 -> 测试集预测 -> 保存预测结果"""
+    # 函数名与 sklearn 类名相同, 用别名导入避免冲突
+    from sklearn.linear_model import LogisticRegression as LRClassifier
+    from sklearn.metrics import accuracy_score
+
+    # (1) 训练模型
+    # C 是正则化强度的倒数: C 越小正则化越强(防过拟合), C 越大越弱; 调参可试 [0.1, 1, 10, 100]
+    # max_iter: 最大迭代次数; 若出现 ConvergenceWarning 说明未收敛, 需增大 (如 2000)
+    model = LRClassifier(C=10, max_iter=2000, random_state=42)
+    print("--- 开始训练逻辑回归模型 ---")
+    model.fit(X_train_tfidf, y_train)
+    print("模型训练完成!")
+
+    # (2) 验证集评估 (模型选择/对比的依据)
+    val_predictions = model.predict(X_val_tfidf)
+    val_accuracy = accuracy_score(y_val, val_predictions)
+    print("--- 逻辑回归 (LogisticRegression) 验证集对比 ---")
+    print(f"验证集准确率: {val_accuracy:.4f}")
+
+    # (3) 对无标签测试集预测, 并保存提交文件
+    predictions = model.predict(X_test_tfidf)
+    pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+
+    return val_accuracy
+
+
+# 5. 多层感知机 (MLPClassifier)
+def MLPClassifier(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf):
+    """多层感知机 (MLPClassifier) 完整流程: 训练 -> 验证集评估 -> 测试集预测 -> 保存预测结果"""
+    # 函数名与 sklearn 类名相同, 用别名导入避免冲突
+    from sklearn.neural_network import MLPClassifier as MLPModel
+    from sklearn.metrics import accuracy_score
+
+    # (1) 训练模型
+    # hidden_layer_sizes=(100,): 一个含 100 个神经元的隐藏层; 可试 (50,) (200,) (100, 50)
+    # alpha: L2 正则化项, 越大正则化越强; 可试 [0.0001, 0.001, 0.01, 0.1]
+    # max_iter: 最大迭代次数; 若出现 ConvergenceWarning 说明未收敛, 需增大
+    model = MLPModel(hidden_layer_sizes=(100,), alpha=0.0001, max_iter=300, random_state=42)
+    print("--- 开始训练多层感知机 (MLP) 模型 ---")
+    model.fit(X_train_tfidf, y_train)
+    print("模型训练完成!")
+
+    # (2) 验证集评估 (模型选择/对比的依据)
+    val_predictions = model.predict(X_val_tfidf)
+    val_accuracy = accuracy_score(y_val, val_predictions)
+    print("--- 多层感知机 (MLP) 验证集对比 ---")
+    print(f"验证集准确率: {val_accuracy:.4f}")
+
+    # (3) 对无标签测试集预测, 并保存提交文件
+    predictions = model.predict(X_test_tfidf)
+    pd.DataFrame(predictions).to_csv('predictions.csv', index=False, header=False)
+
+    return val_accuracy
+
 
 if __name__ == "__main__":
-    pass
+    # 依次运行各算法的完整流程
+    # MultinomialNB(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf)
+    #SVC(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf)
+    #LogisticRegression(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf)
+    MLPClassifier(X_train_tfidf, y_train, X_val_tfidf, y_val, X_test_tfidf)
