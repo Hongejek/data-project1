@@ -1,0 +1,9 @@
+# 文本分类实验依赖清单 (在 Python 3.10 上验证)
+#   pandas        —— 数据读取与处理
+#   scikit-learn  —— TF-IDF 特征提取与四个分类模型 (NB / SVC / LR / MLP)
+#   matplotlib    —— 对比柱状图绘制
+# 安装方式: pip install -r requirements.txt
+
+pandas==2.3.3
+scikit-learn==1.7.2
+matplotlib==3.10.9
